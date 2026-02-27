@@ -1,0 +1,44 @@
+# SRE 告警处理技能配置
+
+name: sre_alert_handler
+version: 1.0
+enabled: true
+author: SRE-NanoBot Team
+
+# 自动审批配置
+auto_approve:
+  enabled: true
+  max_severity: "P2"  # P2 及以下自动审批
+  require_comment: false
+
+# 通知配置
+notification:
+  enabled: true
+  channel: "feishu"
+  on_start: true      # 开始时通知
+  on_complete: true   # 完成时通知
+  on_error: true      # 错误时通知
+  mention_on_p0: true # P0 告警@所有人
+
+# 告警处理配置
+processing:
+  timeout: 300        # 超时时间（秒）
+  retry_count: 3      # 重试次数
+  retry_interval: 10  # 重试间隔（秒）
+  concurrent_limit: 5 # 并发限制
+
+# 预案配置
+runbook:
+  auto_match: true    # 自动匹配预案
+  require_approval_for:
+    - "rollback"
+    - "database_operation"
+  skip_for_severity:
+    - "P3"
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "logs/skill.sre_alert_handler.log"
+  max_size: "10MB"
+  backup_count: 5
