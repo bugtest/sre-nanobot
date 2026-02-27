@@ -37,23 +37,51 @@ app.add_middleware(
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
+        self.alert_connections: List[WebSocket] = []
+        self.metrics_connections: List[WebSocket] = []
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, channel: str = "general"):
         await websocket.accept()
         self.active_connections.append(websocket)
-        logger.info(f"WebSocket 连接成功，当前连接数：{len(self.active_connections)}")
+        if channel == "alerts":
+            self.alert_connections.append(websocket)
+        elif channel == "metrics":
+            self.metrics_connections.append(websocket)
+        logger.info(f"WebSocket 连接成功 (channel={channel}), 当前连接数：{len(self.active_connections)}")
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+    def disconnect(self, websocket: WebSocket, channel: str = "general"):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        if channel == "alerts" and websocket in self.alert_connections:
+            self.alert_connections.remove(websocket)
+        elif channel == "metrics" and websocket in self.metrics_connections:
+            self.metrics_connections.remove(websocket)
         logger.info(f"WebSocket 断开连接，当前连接数：{len(self.active_connections)}")
 
-    async def broadcast(self, message: dict):
-        """广播消息给所有连接"""
-        for connection in self.active_connections:
+    async def broadcast(self, message: dict, channel: str = None):
+        """广播消息"""
+        connections = self.active_connections
+        if channel == "alerts":
+            connections = self.alert_connections
+        elif channel == "metrics":
+            connections = self.metrics_connections
+        
+        disconnected = []
+        for connection in connections:
             try:
                 await connection.send_json(message)
             except Exception as e:
                 logger.error(f"发送消息失败：{e}")
+                disconnected.append(connection)
+        
+        # 清理断开的连接
+        for conn in disconnected:
+            if conn in self.active_connections:
+                self.active_connections.remove(conn)
+            if conn in self.alert_connections:
+                self.alert_connections.remove(conn)
+            if conn in self.metrics_connections:
+                self.metrics_connections.remove(conn)
 
     async def send_personal_message(self, message: dict, websocket: WebSocket):
         """发送个人消息"""
@@ -63,6 +91,51 @@ class ConnectionManager:
             logger.error(f"发送个人消息失败：{e}")
 
 manager = ConnectionManager()
+
+# 后台任务：定时推送实时数据
+async def broadcast_alerts():
+    """定时广播告警数据"""
+    while True:
+        try:
+            await asyncio.sleep(5)  # 每 5 秒推送一次
+            # 获取最新告警
+            alerts_data = {
+                "type": "alert_update",
+                "data": mock_alerts[:3],  # 推送最新 3 条
+                "timestamp": datetime.now().isoformat()
+            }
+            await manager.broadcast(alerts_data, channel="alerts")
+        except Exception as e:
+            logger.error(f"广播告警失败：{e}")
+
+async def broadcast_metrics():
+    """定时广播指标数据"""
+    while True:
+        try:
+            await asyncio.sleep(10)  # 每 10 秒推送一次
+            # 生成模拟指标数据
+            import random
+            metrics_data = {
+                "type": "metrics_update",
+                "data": {
+                    "cpu": {
+                        "current": round(40 + random.random() * 20, 1),
+                        "trend": [random.randint(30, 60) for _ in range(10)]
+                    },
+                    "memory": {
+                        "current": round(55 + random.random() * 15, 1),
+                        "trend": [random.randint(50, 70) for _ in range(10)]
+                    },
+                    "alerts": {
+                        "firing": random.randint(1, 10),
+                        "resolved": random.randint(5, 20)
+                    }
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+            await manager.broadcast(metrics_data, channel="metrics")
+        except Exception as e:
+            logger.error(f"广播指标失败：{e}")
 
 # 模拟数据（实际应该从数据库或 Agent 获取）
 mock_alerts = [
@@ -337,14 +410,50 @@ async def get_alert_metrics():
 @app.websocket("/ws/alerts")
 async def websocket_alerts(websocket: WebSocket):
     """告警实时推送"""
-    await manager.connect(websocket)
+    await manager.connect(websocket, channel="alerts")
     try:
+        # 发送初始数据
+        await manager.send_personal_message({
+            "type": "init",
+            "data": mock_alerts[:5],
+            "message": "欢迎连接到告警实时推送"
+        }, websocket)
+        
         while True:
-            # 保持连接
+            # 保持连接，可以接收客户端消息
             data = await websocket.receive_text()
-            # 可以处理客户端消息
+            logger.info(f"收到客户端消息：{data}")
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        manager.disconnect(websocket, channel="alerts")
+
+@app.websocket("/ws/metrics")
+async def websocket_metrics(websocket: WebSocket):
+    """指标实时推送"""
+    await manager.connect(websocket, channel="metrics")
+    try:
+        # 发送初始数据
+        await manager.send_personal_message({
+            "type": "init",
+            "data": {
+                "cpu": {"current": 45.2, "trend": []},
+                "memory": {"current": 62.8, "trend": []},
+                "alerts": {"firing": 5, "resolved": 7}
+            },
+            "message": "欢迎连接到指标实时推送"
+        }, websocket)
+        
+        while True:
+            data = await websocket.receive_text()
+            logger.info(f"收到客户端消息：{data}")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, channel="metrics")
+
+@app.on_event("startup")
+async def startup_event():
+    """启动时启动后台任务"""
+    logger.info("启动后台广播任务...")
+    asyncio.create_task(broadcast_alerts())
+    asyncio.create_task(broadcast_metrics())
 
 # ─────────────────────────────────────────────────────
 # 主入口
