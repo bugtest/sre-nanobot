@@ -17,6 +17,7 @@ export default defineConfig({
         { path: '/incidents', name: '故障管理', icon: 'Bug', component: '@/pages/Incidents' },
         { path: '/runbooks', name: '预案管理', icon: 'FileText', component: '@/pages/Runbooks' },
         { path: '/metrics', name: '监控指标', icon: 'LineChart', component: '@/pages/Metrics' },
+        { path: '/skills', name: 'Skills', icon: 'Thunderbolt', component: '@/pages/Skills' },
         { path: '/settings', name: '系统设置', icon: 'Setting', component: '@/pages/Settings' },
       ],
     },

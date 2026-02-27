@@ -13,6 +13,9 @@ from datetime import datetime
 from typing import List, Dict, Any
 import logging
 
+# 导入 Skills API
+from api_skills import router as skills_router
+
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -452,8 +455,12 @@ async def websocket_metrics(websocket: WebSocket):
 async def startup_event():
     """启动时启动后台任务"""
     logger.info("启动后台广播任务...")
+    logger.info("初始化 Skills 加载器...")
     asyncio.create_task(broadcast_alerts())
     asyncio.create_task(broadcast_metrics())
+
+# 注册 Skills 路由
+app.include_router(skills_router)
 
 # ─────────────────────────────────────────────────────
 # 主入口

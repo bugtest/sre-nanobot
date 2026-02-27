@@ -1,0 +1,41 @@
+# SRE 故障分析技能配置
+
+name: sre_incident_analyzer
+version: 1.0
+enabled: true
+author: SRE-NanoBot Team
+
+# 分析配置
+analysis:
+  default_depth: "shallow"  # shallow/deep
+  max_alerts_shallow: 10
+  max_alerts_deep: 50
+  time_range_hours_shallow: 1
+  time_range_hours_deep: 24
+
+# 根因分析配置
+root_cause:
+  enable_ml: false  # 是否启用机器学习模型
+  confidence_threshold: 0.7  # 置信度阈值
+  max_candidates: 3  # 最大候选根因数
+
+# 关联分析配置
+correlation:
+  enabled: true
+  temporal_window_minutes: 5  # 时间窗口
+  min_confidence: 0.6  # 最小置信度
+
+# 报告配置
+report:
+  auto_generate: true
+  include_timeline: true
+  include_metrics: true
+  include_logs: false
+  format: "json"  # json/html/markdown
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "logs/skill.sre_incident_analyzer.log"
+  max_size: "10MB"
+  backup_count: 5
