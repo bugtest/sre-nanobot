@@ -1,0 +1,151 @@
+{
+  "_comment": "SRE-NanoBot 配置示例 - 复制为 ~/.nanobot/config.json 并修改",
+  
+  "providers": {
+    "dashscope": {
+      "apiKey": "sk-your-qwen-api-key",
+      "apiBase": "https://dashscope.aliyuncs.com/api/v1"
+    }
+  },
+  
+  "agents": {
+    "defaults": {
+      "model": "dashscope/qwen-max",
+      "provider": "dashscope",
+      "temperature": 0.1
+    },
+    "subagents": {
+      "k8s_agent": {
+        "model": "dashscope/qwen-max",
+        "system_prompt": "你是 K8s 运维专家，负责 Kubernetes 集群操作。操作前确认影响范围，生产环境需要审批。"
+      }
+    }
+  },
+  
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "appId": "cli_xxx",
+      "appSecret": "xxx",
+      "allowFrom": ["ou_your_user_id"]
+    },
+    "dingtalk": {
+      "enabled": false,
+      "clientId": "xxx",
+      "clientSecret": "xxx",
+      "allowFrom": []
+    }
+  },
+  
+  "tools": {
+    "mcpServers": {
+      "k8s": {
+        "command": "python",
+        "args": ["-m", "sre_nanobot.mcp.k8s_server"],
+        "cwd": "/path/to/sre-nanobot"
+      },
+      "prometheus": {
+        "url": "https://prometheus.example.com/sse",
+        "headers": {
+          "Authorization": "Bearer xxx"
+        },
+        "toolTimeout": 60
+      },
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace/sre"],
+        "toolTimeout": 30
+      }
+    },
+    "restrictToWorkspace": true,
+    "exec": {
+      "pathAppend": "/usr/local/bin:/usr/sbin"
+    }
+  },
+  
+  "integrations": {
+    "feishu_notifier": {
+      "enabled": true,
+      "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_WEBHOOK",
+      "secret": "可选的签名密钥",
+      "notification_policy": {
+        "P0": {
+          "channels": ["feishu", "phone"],
+          "mention": ["all"],
+          "escalation_timeout": 300
+        },
+        "P1": {
+          "channels": ["feishu"],
+          "mention": ["oncall"],
+          "escalation_timeout": 900
+        },
+        "P2": {
+          "channels": ["feishu"],
+          "mention": []
+        },
+        "P3": {
+          "channels": ["log"]
+        }
+      },
+      "approval_workflow": {
+        "enabled": true,
+        "default_timeout": 300,
+        "operations": {
+          "pod_restart": "L1",
+          "deployment_rollback": "L2",
+          "database_operation": "L3"
+        }
+      }
+    }
+  },
+  
+  "sre": {
+    "k8s": {
+      "production_namespaces": ["production", "prod", "live"],
+      "approval_required_actions": ["restart", "scale", "delete"],
+      "scale_threshold": 10
+    },
+    "alerting": {
+      "enabled": true,
+      "channels": ["feishu", "dingtalk"],
+      "severity_levels": {
+        "P0": ["phone", "feishu", "dingtalk"],
+        "P1": ["feishu", "dingtalk"],
+        "P2": ["feishu"],
+        "P3": ["feishu"]
+      }
+    },
+    "audit": {
+      "enabled": true,
+      "log_file": "/var/log/sre-nanobot/audit.log",
+      "retention_days": 90
+    }
+  },
+  
+  "cron": {
+    "jobs": [
+      {
+        "name": "morning_check",
+        "message": "执行晨检：1.检查集群 Node 状态 2.检查 production 命名空间 Pod 状态 3.查看资源使用率 4.生成健康报告",
+        "cron": "0 9 * * *",
+        "channel": "feishu"
+      },
+      {
+        "name": "evening_report",
+        "message": "生成日报：1.今日告警统计 2.变更汇总 3.资源使用趋势 4.需要关注的问题",
+        "cron": "0 20 * * *",
+        "channel": "feishu"
+      }
+    ]
+  },
+  
+  "heartbeat": {
+    "enabled": true,
+    "interval_minutes": 30,
+    "workspace": "~/.nanobot/workspace/HEARTBEAT.md",
+    "tasks": [
+      "检查是否有未处理的 P0/P1 告警",
+      "查看集群资源使用率是否异常"
+    ]
+  }
+}

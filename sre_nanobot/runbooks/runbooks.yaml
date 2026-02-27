@@ -1,0 +1,641 @@
+# 标准运维预案集合
+
+---
+
+## 故障处理预案
+
+### pod_restart.yaml
+
+```yaml
+name: pod_restart
+version: "1.0"
+description: Pod 重启预案
+severity: low
+timeout: 300
+
+triggers:
+  - PodCrashLooping
+  - PodNotReady
+  - PodError
+  - ContainerKilled
+
+steps:
+  - name: check_pod_status
+    type: k8s
+    action: get_pods
+    params:
+      namespace: "{{alert.namespace}}"
+      label_selector: "app={{alert.app}}"
+    on_failure: abort
+
+  - name: verify_crash_loop
+    type: analysis
+    action: verify_restart_count
+    params:
+      threshold: 5
+    on_failure: abort
+
+  - name: check_recent_events
+    type: k8s
+    action: get_events
+    params:
+      namespace: "{{alert.namespace}}"
+      field_selector: "involvedObject.name={{alert.pod}}"
+    on_failure: continue
+
+  - name: restart_deployment
+    type: k8s
+    action: rollout_restart
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{alert.deployment}}"
+    requires_approval: true
+    approval_timeout: 300
+    on_failure: abort
+
+  - name: wait_rolling_update
+    type: wait
+    duration: 120
+    check:
+      type: k8s
+      action: get_rollout_status
+      params:
+        namespace: "{{alert.namespace}}"
+        deployment: "{{alert.deployment}}"
+
+  - name: verify_pod_ready
+    type: k8s
+    action: wait_pod_ready
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{alert.deployment}}"
+    timeout: 180
+    on_failure: rollback
+
+  - name: health_check
+    type: http
+    action: health_check
+    params:
+      url: "{{service.health_endpoint}}"
+      expected_status: 200
+    retries: 3
+    retry_interval: 10
+    on_failure: rollback
+
+rollback:
+  - name: notify_rollback
+    type: notification
+    action: send_message
+    params:
+      channel: feishu
+      message: "Pod 重启失败，已回滚，需要人工介入"
+
+  - name: create_incident
+    type: ticket
+    action: create_incident
+    params:
+      severity: P1
+      title: "Pod 重启失败 - {{alert.deployment}}"
+```
+
+---
+
+### deployment_rollback.yaml
+
+```yaml
+name: deployment_rollback
+version: "1.0"
+description: 部署回滚预案
+severity: medium
+timeout: 600
+
+triggers:
+  - DeploymentFailed
+  - HighErrorRate
+  - ServiceUnavailable
+  - NewVersionError
+
+steps:
+  - name: get_current_version
+    type: k8s
+    action: get_deployment_history
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{alert.deployment}}"
+    on_failure: abort
+
+  - name: check_rollback_available
+    type: analysis
+    action: check_revision
+    params:
+      min_revision: 1
+    on_failure: abort
+
+  - name: notify_rollback_start
+    type: notification
+    action: send_message
+    params:
+      channel: feishu
+      message: "开始回滚 {{alert.deployment}} 到上一个版本"
+
+  - name: execute_rollback
+    type: k8s
+    action: rollout_undo
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{alert.deployment}}"
+    requires_approval: true
+    approval_timeout: 180
+    on_failure: abort
+
+  - name: wait_rollback_complete
+    type: wait
+    duration: 180
+    check:
+      type: k8s
+      action: get_rollout_status
+      params:
+        namespace: "{{alert.namespace}}"
+        deployment: "{{alert.deployment}}"
+
+  - name: verify_rollback_success
+    type: k8s
+    action: check_deployment_status
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{alert.deployment}}"
+      expected_status: "Available"
+    on_failure: continue
+
+  - name: verify_service_health
+    type: http
+    action: health_check
+    params:
+      url: "{{service.health_endpoint}}"
+    retries: 3
+    on_failure: continue
+
+  - name: notify_rollback_complete
+    type: notification
+    action: send_message
+    params:
+      channel: feishu
+      message: "回滚完成：{{alert.deployment}}"
+
+verification:
+  - name: check_error_rate
+    type: metrics
+    action: check_error_rate
+    params:
+      service: "{{alert.service}}"
+      threshold: 1.0
+    timeout: 300
+
+  - name: check_latency
+    type: metrics
+    action: check_latency_p99
+    params:
+      service: "{{alert.service}}"
+      threshold: 500
+```
+
+---
+
+## 资源管理预案
+
+### scale_up.yaml
+
+```yaml
+name: scale_up
+version: "1.0"
+description: 服务扩容预案
+severity: low
+timeout: 600
+
+triggers:
+  - HighCPUUsage
+  - HighMemoryUsage
+  - HighLoad
+  - HorizontalPodAutoscalerMaxed
+
+steps:
+  - name: get_current_replicas
+    type: k8s
+    action: get_deployment
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{alert.deployment}}"
+    on_failure: abort
+
+  - name: check_hpa_status
+    type: k8s
+    action: get_hpa
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{alert.deployment}}"
+    on_failure: continue
+
+  - name: calculate_target_replicas
+    type: calculation
+    action: calculate_scale_target
+    params:
+      current: "{{current_replicas}}"
+      cpu_usage: "{{metrics.cpu_usage}}"
+      memory_usage: "{{metrics.memory_usage}}"
+      increment_strategy: "percentage"
+      increment_percentage: 50
+      max_replicas: 20
+    on_failure: abort
+
+  - name: check_quota
+    type: k8s
+    action: check_resource_quota
+    params:
+      namespace: "{{alert.namespace}}"
+      resource_type: pods
+      requested: "{{target_replicas}}"
+    on_failure: abort
+
+  - name: notify_scale_plan
+    type: notification
+    action: send_message
+    params:
+      channel: feishu
+      message: "计划扩容 {{alert.deployment}}: {{current_replicas}} → {{target_replicas}}"
+
+  - name: execute_scale
+    type: k8s
+    action: scale
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{alert.deployment}}"
+      replicas: "{{target_replicas}}"
+    requires_approval: true
+    approval_timeout: 300
+    on_failure: abort
+
+  - name: wait_scale_complete
+    type: wait
+    duration: 120
+    check:
+      type: k8s
+      action: get_deployment
+      condition: "ready_replicas == {{target_replicas}}"
+
+  - name: verify_stability
+    type: metrics
+    action: check_metrics_stable
+    params:
+      metrics:
+        - cpu_usage
+        - memory_usage
+      duration: 120
+      threshold: 70
+
+verification:
+  - name: check_cpu_after_scale
+    type: metrics
+    action: check_cpu_usage
+    params:
+      deployment: "{{alert.deployment}}"
+      threshold: 70
+
+  - name: check_memory_after_scale
+    type: metrics
+    action: check_memory_usage
+    params:
+      deployment: "{{alert.deployment}}"
+      threshold: 80
+```
+
+---
+
+### resource_limit_update.yaml
+
+```yaml
+name: resource_limit_update
+version: "1.0"
+description: 资源限制更新预案
+severity: medium
+timeout: 900
+
+triggers:
+  - OOMKilled
+  - CPUCgroupThrottled
+  - MemoryPressure
+
+steps:
+  - name: analyze_oom_kills
+    type: analysis
+    action: analyze_oom_events
+    params:
+      namespace: "{{alert.namespace}}"
+      pod: "{{alert.pod}}"
+      lookback: 3600
+    on_failure: continue
+
+  - name: get_current_limits
+    type: k8s
+    action: get_resource_limits
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{alert.deployment}}"
+    on_failure: abort
+
+  - name: calculate_new_limits
+    type: calculation
+    action: calculate_resource_limits
+    params:
+      current_memory: "{{current_limits.memory}}"
+      current_cpu: "{{current_limits.cpu}}"
+      peak_memory: "{{metrics.peak_memory}}"
+      peak_cpu: "{{metrics.peak_cpu}}"
+      buffer_percentage: 30
+    on_failure: abort
+
+  - name: check_quota_available
+    type: k8s
+    action: check_resource_quota
+    params:
+      namespace: "{{alert.namespace}}"
+      resource_type: limits.memory
+      requested: "{{new_memory_limit}}"
+    on_failure: abort
+
+  - name: notify_limit_change
+    type: notification
+    action: send_message
+    params:
+      channel: feishu
+      message: "计划更新资源限制：内存 {{current_memory}} → {{new_memory}}, CPU {{current_cpu}} → {{new_cpu}}"
+
+  - name: patch_deployment
+    type: k8s
+    action: patch_resources
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{alert.deployment}}"
+      limits:
+        memory: "{{new_memory_limit}}"
+        cpu: "{{new_cpu_limit}}"
+      requests:
+        memory: "{{new_memory_request}}"
+        cpu: "{{new_cpu_request}}"
+    requires_approval: true
+    on_failure: abort
+
+  - name: wait_rolling_update
+    type: wait
+    duration: 180
+    check:
+      type: k8s
+      action: get_rollout_status
+
+  - name: verify_no_oom
+    type: metrics
+    action: monitor_oom
+    params:
+      deployment: "{{alert.deployment}}"
+      duration: 300
+    on_failure: continue
+
+verification:
+  - name: check_stability
+    type: metrics
+    action: check_deployment_stability
+    params:
+      deployment: "{{alert.deployment}}"
+      duration: 600
+```
+
+---
+
+## 网络问题预案
+
+### dns_recovery.yaml
+
+```yaml
+name: dns_recovery
+version: "1.0"
+description: DNS 问题恢复预案
+severity: medium
+timeout: 600
+
+triggers:
+  - DNSResolutionFailed
+  - CoreDNSHighLatency
+  - DNSLookupError
+
+steps:
+  - name: check_coredns_pods
+    type: k8s
+    action: get_pods
+    params:
+      namespace: kube-system
+      label_selector: "k8s-app=kube-dns"
+    on_failure: abort
+
+  - name: check_coredns_logs
+    type: k8s
+    action: get_logs
+    params:
+      namespace: kube-system
+      pod: "{{coredns_pod}}"
+      tail: 100
+    on_failure: continue
+
+  - name: test_dns_resolution
+    type: script
+    action: run_command
+    params:
+      command: "nslookup kubernetes.default"
+    on_failure: continue
+
+  - name: restart_coredns
+    type: k8s
+    action: rollout_restart
+    params:
+      namespace: kube-system
+      deployment: coredns
+    requires_approval: true
+    on_failure: abort
+
+  - name: wait_coredns_ready
+    type: wait
+    duration: 60
+    check:
+      type: k8s
+      action: wait_pods_ready
+      params:
+        namespace: kube-system
+        label_selector: "k8s-app=kube-dns"
+
+  - name: verify_dns_resolution
+    type: script
+    action: run_command
+    params:
+      command: "nslookup kubernetes.default"
+    retries: 3
+    on_failure: continue
+
+  - name: notify_recovery
+    type: notification
+    action: send_message
+    params:
+      channel: feishu
+      message: "DNS 服务已恢复"
+```
+
+---
+
+## 存储问题预案
+
+### pvc_recovery.yaml
+
+```yaml
+name: pvc_recovery
+version: "1.0"
+description: PVC 问题恢复预案
+severity: medium
+timeout: 900
+
+triggers:
+  - PVCPending
+  - PVCBoundFailed
+  - VolumeProvisioningFailed
+
+steps:
+  - name: get_pvc_status
+    type: k8s
+    action: get_pvc
+    params:
+      namespace: "{{alert.namespace}}"
+      pvc: "{{alert.pvc}}"
+    on_failure: abort
+
+  - name: check_storage_class
+    type: k8s
+    action: get_storage_class
+    params:
+      name: "{{pvc.storage_class}}"
+    on_failure: abort
+
+  - name: check_available_pv
+    type: k8s
+    action: get_available_pv
+    params:
+      storage_class: "{{pvc.storage_class}}"
+      size: "{{pvc.size}}"
+    on_failure: continue
+
+  - name: check_provisioner_status
+    type: k8s
+    action: get_deployment
+    params:
+      namespace: kube-system
+      deployment: "{{provisioner_deployment}}"
+    on_failure: continue
+
+  - name: restart_provisioner
+    type: k8s
+    action: rollout_restart
+    params:
+      namespace: kube-system
+      deployment: "{{provisioner_deployment}}"
+    requires_approval: true
+    on_failure: continue
+
+  - name: wait_pvc_bound
+    type: wait
+    duration: 300
+    check:
+      type: k8s
+      action: get_pvc
+      condition: "status.phase == Bound"
+    on_failure: continue
+
+  - name: notify_status
+    type: notification
+    action: send_message
+    params:
+      channel: feishu
+      message: "PVC {{alert.pvc}} 状态：{{pvc.status}}"
+```
+
+---
+
+## 数据库问题预案
+
+### database_connection_fix.yaml
+
+```yaml
+name: database_connection_fix
+version: "1.0"
+description: 数据库连接问题修复预案
+severity: high
+timeout: 600
+
+triggers:
+  - DatabaseConnectionFailed
+  - DatabaseTimeout
+  - TooManyConnections
+
+steps:
+  - name: check_database_status
+    type: k8s
+    action: get_pod_status
+    params:
+      namespace: "{{db.namespace}}"
+      pod: "{{db.pod}}"
+    on_failure: continue
+
+  - name: check_connection_count
+    type: metrics
+    action: query_prometheus
+    params:
+      query: "pg_stat_activity_count{datname=\"{{db.name}}\"}"
+    on_failure: continue
+
+  - name: check_slow_queries
+    type: metrics
+    action: query_prometheus
+    params:
+      query: "pg_slow_queries"
+    on_failure: continue
+
+  - name: restart_connection_pooler
+    type: k8s
+    action: rollout_restart
+    params:
+      namespace: "{{alert.namespace}}"
+      deployment: "{{connection_pooler}}"
+    requires_approval: true
+    on_failure: continue
+
+  - name: kill_idle_connections
+    type: script
+    action: run_sql
+    params:
+      sql: "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle' AND query_start < now() - interval '10 minutes';"
+    requires_approval: true
+    on_failure: continue
+
+  - name: verify_connections
+    type: metrics
+    action: check_connection_count
+    params:
+      threshold: 80
+    timeout: 120
+
+  - name: notify_dba
+    type: notification
+    action: send_message
+    params:
+      channel: feishu
+      message: "数据库连接问题已处理，需要 DBA 进一步分析"
+      recipients: ["@DBA"]
+```
+
+---
+
+*预案库持续更新中...*
